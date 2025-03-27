@@ -1,11 +1,54 @@
 ---
-title: "lab-6"
+title: “Lab 6“
+author: Rachel Delorie
+format: html
+execute:
+  echo: true
 ---
+```{r}
+# setup
+library(tidymodels)
+library(recipes)
+library(yardstick)
+library(ggthemes)
+library(ggplot2)
+library(parsnip)
+library(tidyverse)
+library(powerjoin)
+library(purrr)
+library(glue)
+library(vip)
+library(baguette)
 
-## Quarto
+root  <- 'https://gdex.ucar.edu/dataset/camels/file'
+download.file('https://gdex.ucar.edu/dataset/camels/file/camels_attributes_v2.0.pdf', 
+              'data/camels_attributes_v2.0.pdf')
+types <- c("clim", "geol", "soil", "topo", "vege", "hydro")
+# Where the files live online ...
+remote_files  <- glue('{root}/camels_{types}.txt')
+# where we want to download the data ...
+local_files   <- glue('data/camels_{types}.txt')
+walk2(remote_files, local_files, download.file, quiet = TRUE)
+# Read and merge data
+camels <- map(local_files, read_delim, show_col_types = FALSE) 
+camels <- power_full_join(camels ,by = 'gauge_id')
+```
 
-Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
 
 ```{r}
-1 + 1
-```
+map_aridity <- ggplot(data = camels, aes(x = gauge_lon, y = gauge_lat)) +
+  borders("state", colour = "gray50") +
+    labs(color = "Aridity", title = "Aridity") +
+   geom_point(aes(color = aridity)) +
+  scale_color_gradient(low = "blue", high = "red") +
+  ggthemes::theme_map()
+
+map_pmean <- ggplot(data = camels, aes(x = gauge_lon, y = gauge_lat)) +
+  borders("state", colour = "gray50") +
+   geom_point(aes(color = q_mean)) +
+  scale_color_gradient(low = "lightblue", high = "darkblue") +
+  labs(color = "p_mean", title = "Mean Daily Precipitation") +
+  ggthemes::theme_map() 
+  
+combined_maps <- map_aridity + map_pmean + plot_layout(ncol = 1)
+
