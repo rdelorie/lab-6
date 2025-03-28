@@ -12,9 +12,11 @@ library(recipes)
 library(yardstick)
 library(ggthemes)
 library(ggplot2)
+library(patchwork)
 library(parsnip)
 library(tidyverse)
 library(powerjoin)
+library(xgboost)
 library(purrr)
 library(glue)
 library(vip)
@@ -47,8 +49,113 @@ map_pmean <- ggplot(data = camels, aes(x = gauge_lon, y = gauge_lat)) +
   borders("state", colour = "gray50") +
    geom_point(aes(color = q_mean)) +
   scale_color_gradient(low = "lightblue", high = "darkblue") +
-  labs(color = "p_mean", title = "Mean Daily Precipitation") +
+  labs(color = "q_mean", title = "Mean Daily Precipitation") +
   ggthemes::theme_map() 
   
-combined_maps <- map_aridity + map_pmean + plot_layout(ncol = 1)
+combined_maps <- map_aridity + map_pmean + plot_layout(ncol = 2)
+combined_maps
+```
+
+```{r}
+# Define model
+# Create a recipe to preprocess the data
+set.seed(123)
+# Bad form to perform simple transformations on the outcome variable within a 
+# recipe. So, we'll do it here.
+camels <- camels |> 
+  mutate(logQmean = log(q_mean))
+
+# Generate the split
+camels_split <- initial_split(camels, prop = 0.8)
+camels_train <- training(camels_split)
+camels_test  <- testing(camels_split)
+
+camels_cv <- vfold_cv(camels_train, v = 10)
+
+rec <-  recipe(logQmean ~ aridity + p_mean, data = camels_train) %>%
+  # Log transform the predictor variables (aridity and p_mean)
+  
+  step_log(all_predictors()) %>%
+  # Add an interaction term between aridity and p_mean
+  step_interact(terms = ~ aridity:p_mean) |> 
+  # Drop any rows with missing values in the pred
+  step_naomit(all_predictors(), all_outcomes())
+
+# Prepare the data
+baked_data <- prep(rec, camels_train) |> 
+  bake(new_data = NULL)
+
+# Interaction with lm
+#  Base lm sets interaction terms with the * symbol
+lm_base <- lm(logQmean ~ aridity * p_mean, data = baked_data)
+summary(lm_base)
+
+test_data <-  bake(prep(rec), new_data = camels_test)
+test_data$lm_pred <- predict(lm_base, newdata = test_data)
+
+lm_model <- linear_reg() %>%
+  # define the engine
+  set_engine("lm") %>%
+  # define the mode
+  set_mode("regression")
+
+# Instantiate a workflow ...
+lm_wf <- workflow() %>%
+  # Add the recipe
+  add_recipe(rec) %>%
+  # Add the model
+  add_model(lm_model) %>%
+  # Fit the model to the training data
+  fit(data = camels_train) 
+
+# Extract the model coefficients from the workflow
+summary(extract_fit_engine(lm_wf))$coefficients
+
+
+rf_model <- rand_forest() %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("regression")
+
+rf_wf <- workflow() %>%
+  # Add the recipe
+  add_recipe(rec) %>%
+  # Add the model
+  add_model(rf_model) %>%
+  # Fit the model
+  fit(data = camels_train) 
+
+rf_data <- augment(rf_wf, new_data = camels_test)
+dim(rf_data)
+
+# adding an nnet to provided code
+nn_model <- bag_mlp() %>% 
+  set_engine("nnet") %>% 
+  set_mode("regression") 
+
+nn_wf <- workflow() %>% 
+  add_recipe(rec) %>% 
+  add_model(nn_model) %>% 
+  fit(data = camels_train)
+
+# adding an xgboost to provided code
+xg_model <- boost_tree() %>% 
+  set_engine("xgboost") %>% 
+  set_mode("regression") 
+
+xg_wf <- workflow() %>% 
+  add_recipe(rec) %>% 
+  add_model(xg_model) %>% 
+  fit(data = camels_train)
+
+wf <- workflow_set(list(rec), list(lm_model, rf_model, nn_model, xg_model)) %>%
+  workflow_map('fit_resamples', resamples = camels_cv) 
+
+autoplot(wf)
+
+# Out of the 4 models above, I would move forward with using the rand_forest model because it has a low rmse (~.56) and a decently high rsq (~.75). 
+```
+
+```{r}
+
+```
 
