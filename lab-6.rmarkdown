@@ -5,6 +5,7 @@ format: html
 execute:
   echo: true
 ---
+
 ```{r setup}
 # setup
 library(tidymodels)
@@ -218,3 +219,4 @@ ggplot(rf_camel_data, aes(x = logQmean, y = .pred, colour = pet_mean)) +
 # I think the graph shows a decent fit of points to the black line, meaning that this model predicts logQmean values pretty well. Some values deviate, and those could be errors or underpredictions. Additionally, this model seems to do better at predicting higher pet_mean values because those values deviate from the black line much less than logQmean values between -4 and 0. 
 
 ```
+
