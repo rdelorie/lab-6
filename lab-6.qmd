@@ -147,7 +147,7 @@ xg_wf <- workflow() %>%
   fit(data = camels_train)
 
 wf <- workflow_set(list(rec), list(lm_model, rf_model, nn_model, xg_model)) %>%
-  workflow_map('fit_resamples', resamples = camels_cv) 
+  workflow_map(resamples = camels_cv) 
 
 autoplot(wf)
 

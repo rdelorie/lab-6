@@ -12,9 +12,12 @@ library(yardstick)
 library(ggthemes)
 library(ggplot2)
 library(patchwork)
+library(ggfortify)
 library(parsnip)
 library(tidyverse)
+library(visdat)
 library(powerjoin)
+library(skimr)
 library(xgboost)
 library(dplyr)
 library(purrr)
@@ -22,6 +25,7 @@ library(glue)
 library(vip)
 library(baguette)
 
+# Data Import/Tidy/Transform	
 root  <- 'https://gdex.ucar.edu/dataset/camels/file'
 download.file('https://gdex.ucar.edu/dataset/camels/file/camels_attributes_v2.0.pdf', 
               'data/camels_attributes_v2.0.pdf')
@@ -39,43 +43,116 @@ camels <- map(local_files, read_delim, show_col_types = FALSE)
 camels <- power_full_join(camels ,by = 'gauge_id') 
 
 camels <- camels %>% 
-  drop_na()
+  mutate(logQmean = log(q_mean)) %>% 
+  mutate(across(everything(), as.double))
 
 skim(camels)
 vis_dat(camels)
 ```
 
 ```{r models}
-set.seed(250)
+set.seed(123)
 
+# Generate split
+camels_splitting <- initial_split(camels, prop = 0.75)
+camels_training <- training(camels_split)
+camels_testing  <- testing(camels_split)
+camels_10cv <- vfold_cv(camels_training, v = 10)
+
+# make a recipe
+recipe <- recipe(logQmean ~ ., data = camels_training) %>%
+  step_log(all_predictors()) %>%
+  step_rm(gauge_lat, gauge_lon) %>% 
+  step_naomit(all_predictors(), all_outcomes())
+
+baked_data <- prep(recipe, camels_training) %>%  
+  bake(new_data = NULL)
+
+#define rf model
+rf_camel_model <-rand_forest() %>% 
+  set_engine("ranger") %>% 
+  set_mode("regression")
+
+#2 others of my choice
+xg_camel_model <-boost_tree() %>% 
+  set_engine("xgboost") %>% 
+  set_mode("regression")
+
+lm_camel_model <- linear_reg() %>%
+  set_engine("lm") %>%
+  set_mode("regression")
+
+#setup workflow
+wf <- workflow_set(list(rec),list(rf_camel_model,xg_camel_model,lm_camel_model)) %>% 
+  workflow_map('fit_resamples', resamples = camels_10cv)
+
+autoplot(wf)
+rank_results(wf, rank_metric = "rsq", select_best = TRUE)
+```
+
+```{r}
+set.seed(123)
+# Bad form to perform simple transformations on the outcome variable within a 
+# recipe. So, we'll do it here.
+camels <- camels |> 
+  mutate(logQmean = log(q_mean))
+
+# Generate the split
 camels_split <- initial_split(camels, prop = 0.8)
 camels_train <- training(camels_split)
 camels_test  <- testing(camels_split)
 
 camels_cv <- vfold_cv(camels_train, v = 10)
 
-rec <- recipe(q_mean ~ ., data = camels_train) %>%
-  step_rm(gauge_id, gauge_lat, gauge_lon) %>%
-  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
-  step_center(all_numeric_predictors()) %>%
-  step_scale(all_numeric_predictors())
+rec <-  recipe(logQmean ~ aridity + p_mean, data = camels_train) %>%
+  # Log transform the predictor variables (aridity and p_mean)
+  
+  step_log(all_predictors()) %>%
+  # Add an interaction term between aridity and p_mean
+  step_interact(terms = ~ aridity:p_mean) |> 
+  # Drop any rows with missing values in the pred
+  step_naomit(all_predictors(), all_outcomes())
 
-# 3 candidate models
+# Prepare the data
+baked_data <- prep(rec, camels_train) |> 
+  bake(new_data = NULL)
 
+# Interaction with lm
+#  Base lm sets interaction terms with the * symbol
+lm_base <- lm(logQmean ~ aridity * p_mean, data = baked_data)
+summary(lm_base)
+
+test_data <-  bake(prep(rec), new_data = camels_test)
+test_data$lm_pred <- predict(lm_base, newdata = test_data)
+
+# Extract the model coefficients from the workflow
+summary(extract_fit_engine(lm_wf))$coefficients
+
+rf_data <- augment(rf_wf, new_data = camels_test)
+dim(rf_data)
+
+# adding an nnet to provided code
+nn_model <- bag_mlp() %>% 
+  set_engine("nnet") %>% 
+  set_mode("regression") 
+
+nn_wf <- workflow() %>% 
+  add_recipe(rec) %>% 
+  add_model(nn_model) %>% 
+  fit(data = camels_train)
+
+# adding an xgboost to provided code
 xg_model <- boost_tree() %>% 
   set_engine("xgboost") %>% 
-  set_mode("regression")
+  set_mode("regression") 
 
-rf_model <- rand_forest() %>% 
-  set_engine("ranger") %>% 
-  set_mode("regression")
+xg_wf <- workflow() %>% 
+  add_recipe(rec) %>% 
+  add_model(xg_model) %>% 
+  fit(data = camels_train)
 
-lm_model <- linear_reg() %>%
-  set_engine("lm") %>%
-  set_mode("regression")
-
-wf <-workflow_set(list(rec), list(xg_model, rf_model, lm_model)) %>%
-  workflow_map('fit_resamples', resamples = camels_cv)
+wf <- workflow_set(list(rec), list(lm_model, rf_model, nn_model, xg_model)) %>%
+  workflow_map(resamples = camels_cv) 
 
 autoplot(wf)
 ```
