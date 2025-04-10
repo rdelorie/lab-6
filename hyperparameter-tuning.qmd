@@ -1,0 +1,82 @@
+---
+title: "hyperparameter-tuning"
+author: Rachel Delorie
+format: html
+execute:
+  echo: true
+---
+```{r setup/EDA}
+library(tidymodels)
+library(recipes)
+library(yardstick)
+library(ggthemes)
+library(ggplot2)
+library(patchwork)
+library(parsnip)
+library(tidyverse)
+library(powerjoin)
+library(xgboost)
+library(dplyr)
+library(purrr)
+library(glue)
+library(vip)
+library(baguette)
+
+root  <- 'https://gdex.ucar.edu/dataset/camels/file'
+download.file('https://gdex.ucar.edu/dataset/camels/file/camels_attributes_v2.0.pdf', 
+              'data/camels_attributes_v2.0.pdf')
+types <- c("clim", "geol", "soil", "topo", "vege", "hydro")
+
+# Where the files live online ...
+remote_files  <- glue('{root}/camels_{types}.txt')
+# where we want to download the data ...
+
+local_files   <- glue('data/camels_{types}.txt')
+walk2(remote_files, local_files, download.file, quiet = TRUE)
+
+# Read and merge data
+camels <- map(local_files, read_delim, show_col_types = FALSE) 
+camels <- power_full_join(camels ,by = 'gauge_id') 
+
+camels <- camels %>% 
+  drop_na()
+
+skim(camels)
+vis_dat(camels)
+```
+
+```{r models}
+set.seed(250)
+
+camels_split <- initial_split(camels, prop = 0.8)
+camels_train <- training(camels_split)
+camels_test  <- testing(camels_split)
+
+camels_cv <- vfold_cv(camels_train, v = 10)
+
+rec <- recipe(q_mean ~ ., data = camels_train) %>%
+  step_rm(gauge_id, gauge_lat, gauge_lon) %>%
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
+  step_center(all_numeric_predictors()) %>%
+  step_scale(all_numeric_predictors())
+
+# 3 candidate models
+
+xg_model <- boost_tree() %>% 
+  set_engine("xgboost") %>% 
+  set_mode("regression")
+
+rf_model <- rand_forest() %>% 
+  set_engine("ranger") %>% 
+  set_mode("regression")
+
+lm_model <- linear_reg() %>%
+  set_engine("lm") %>%
+  set_mode("regression")
+
+wf <-workflow_set(list(rec), list(xg_model, rf_model, lm_model)) %>%
+  workflow_map('fit_resamples', resamples = camels_cv)
+
+autoplot(wf)
+```
+
