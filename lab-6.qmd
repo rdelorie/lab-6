@@ -157,9 +157,6 @@ autoplot(wf)
 ```{r build your own}
 #> Build Your Own: predict mean streamflow using CAMELS
 set.seed(123)
-camels <- camels %>% 
-  mutate(logQmean = log(q_mean))
-
 # Generate split
 camels_splitting <- initial_split(camels, prop = 0.75)
 camels_training <- training(camels_split)

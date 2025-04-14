@@ -50,51 +50,9 @@ skim(camels)
 vis_dat(camels)
 ```
 
-```{r models}
-set.seed(123)
-
-# Generate split
-camels_splitting <- initial_split(camels, prop = 0.75)
-camels_training <- training(camels_split)
-camels_testing  <- testing(camels_split)
-camels_10cv <- vfold_cv(camels_training, v = 10)
-
-# make a recipe
-recipe <- recipe(logQmean ~ ., data = camels_training) %>%
-  step_log(all_predictors()) %>%
-  step_rm(gauge_lat, gauge_lon) %>% 
-  step_naomit(all_predictors(), all_outcomes())
-
-baked_data <- prep(recipe, camels_training) %>%  
-  bake(new_data = NULL)
-
-#define rf model
-rf_camel_model <-rand_forest() %>% 
-  set_engine("ranger") %>% 
-  set_mode("regression")
-
-#2 others of my choice
-xg_camel_model <-boost_tree() %>% 
-  set_engine("xgboost") %>% 
-  set_mode("regression")
-
-lm_camel_model <- linear_reg() %>%
-  set_engine("lm") %>%
-  set_mode("regression")
-
-#setup workflow
-wf <- workflow_set(list(rec),list(rf_camel_model,xg_camel_model,lm_camel_model)) %>% 
-  workflow_map('fit_resamples', resamples = camels_10cv)
-
-autoplot(wf)
-rank_results(wf, rank_metric = "rsq", select_best = TRUE)
-```
-
 ```{r}
-set.seed(123)
-# Bad form to perform simple transformations on the outcome variable within a 
-# recipe. So, we'll do it here.
-camels <- camels |> 
+set.seed(567)
+camels <- camels %>%  
   mutate(logQmean = log(q_mean))
 
 # Generate the split
@@ -155,5 +113,82 @@ wf <- workflow_set(list(rec), list(lm_model, rf_model, nn_model, xg_model)) %>%
   workflow_map(resamples = camels_cv) 
 
 autoplot(wf)
+# Based on the visualized metrics, the best model is bag_mlp (the neural net). I think it worked the best because it is the most capable of modeling complex patterns, as well as scalability and generalization. The engine is nnet and the mode is regression. 
+```
+
+```{r Lab 8}
+#model tuning
+nn_model <- bag_mlp(
+  hidden_units = tune(), 
+  penalty = tune()
+) %>%
+  set_engine("nnet") %>%
+  set_mode("regression")
+
+wf_tune<- workflow() %>% 
+  add_recipe(rec) %>% 
+  add_model(nn_model)
+
+dials <- extract_parameter_set_dials(wf_tune)
+
+# define search space
+my.grid <- grid_space_filling(dials, size = 20)
+
+model_params <-  tune_grid(
+    wf_tune,
+    resamples = camels_cv,
+    grid = my.grid,
+    metrics = metric_set(rmse, rsq, mae),
+    control = control_grid(save_pred = TRUE)
+  )
+autoplot(model_params)
+collect_metrics(model_params)
+best_mae <- show_best(model_params, metric = "mae", n = 1)
+hp_best <- select_best(model_params, metric = "mae")
+#> The first row shows the mean MAE across resamples. It also showws the standard error of the MAE estimate, the number of resamples used, and the mean standard error. Penalty is the best hyperparameter set for this model. 
+
+final_wf <- finalize_workflow(wf_tune, hp_best)
+final_fit <- last_fit(final_wf, split = camels_split)
+last_fit <- last_fit(final_wf, split = camels_split)
+final_metrics <- collect_metrics(last_fit)
+
+# the final model's rmse 53.5% and the rsq is 78%. This means that 78% of the variance is explained by the model. This is a decent number. The rmse is the average prediction error, and this percentage is above 50% which is a pretty high error amount. This model is reasonably good, but the rmse suggests plenty of room for improvement. 
+
+predictions <- collect_predictions(model_params)
+
+ggplot(predictions, aes(x = .pred, y = logQmean)) +
+  geom_smooth(method = lm, color = "blue") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  scale_color_gradient() +
+  labs(
+    title = "Actual vs. Predicted Values", 
+    x = "Predicted", 
+    y = "Actual")
+
+final_fit_full <- fit(final_wf, data = camels)
+augmented_preds <- augment(final_fit_full, new_data = camels)
+
+augmented_preds <- augmented_preds %>% 
+  mutate(residual_sq = (logQmean - .pred)^2)
+
+map_preds <- ggplot(augmented_preds, aes(x = .pred, y = logQmean)) +
+  geom_point(aes(color = .pred), size = 3, alpha = 0.8) +
+  scale_color_viridis_c(name = "Predicted") +
+  coord_fixed() +
+  labs(title = "Map of Predicted logQmean") +
+  theme_minimal()
+
+map_resid <- ggplot(augmented_preds, aes(x = .pred, y = residual_sq) +
+  geom_point() +
+  coord_fixed() +
+   scale_color_viridis_c(name = "Residual²") +
+  labs(title = "Map of Squared Residuals") +
+  theme_minimal()
+
+library(patchwork
+maps_combined <- map_preds + map_resid
+
+maps_combined
+
 ```
 
